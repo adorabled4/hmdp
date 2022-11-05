@@ -22,11 +22,22 @@ public class FollowController {
     @Resource
     IFollowService followService;
 
+    /**
+     * 关注以及取关用户
+     * @param followUserId
+     * @param isFollow
+     * @return
+     */
     @PutMapping("{id}/{isFollow}")
     public Result follow(@PathVariable("id")Long followUserId,@PathVariable Boolean isFollow){
         return followService.follow(followUserId,isFollow);
     }
 
+    /**
+     * 判断是否关注了用户
+     * @param followUserId
+     * @return
+     */
     @GetMapping("or/not/{id}")
     public Result follow(@PathVariable("id")Long followUserId){
         return followService.isFollow(followUserId);
@@ -35,6 +46,5 @@ public class FollowController {
     @GetMapping("/common/{id}")
     public Result followCommons(@PathVariable("id")Long id){
         return followService.followCommons(id);
-
     }
 }

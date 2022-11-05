@@ -19,7 +19,7 @@ public class RedisConfig {
     public RedissonClient redissonClient(){
         //配置
         Config config = new Config();
-        config  .useSingleServer().setAddress("redis://192.168.204.129:6379").setPassword("qwer");
+        config  .useSingleServer().setAddress("redis://192.168.159.129:6379").setPassword("qwer");
         //创建RedissonClient对象
         return Redisson.create(config);
     }

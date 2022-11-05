@@ -6,28 +6,35 @@ import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.Result;
+import com.hmdp.dto.ScrollResult;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.Blog;
+import com.hmdp.entity.Follow;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.BlogMapper;
+import com.hmdp.mapper.FollowMapper;
 import com.hmdp.service.IBlogService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.SystemConstants;
 import com.hmdp.utils.UserHolder;
+import jodd.util.StringUtil;
 import org.springframework.context.annotation.Bean;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import static com.hmdp.utils.RedisConstants.BLOG_LIKED_KEY;
+import static com.hmdp.utils.RedisConstants.FEED_KEY;
 
 /**
  * <p>
@@ -44,6 +51,8 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
     @Resource
     private IUserService userService;
 
+    @Resource
+    private FollowMapper followMapper;
 
     @Override
     public Result queryBlogById(Long id) {
@@ -150,5 +159,76 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
                 .collect(Collectors.toList());
         //4.返回userDTO  List 数据
         return  Result.ok(users);
+    }
+
+    @Override
+    public Result saveBlog(Blog blog) {
+        Long userId = UserHolder.getUser().getId();
+        blog.setUserId(userId);
+
+        boolean isSuccess = save(blog);
+        if(!isSuccess){
+            return Result.ok("新增笔记失败!");
+        }
+        //1. 查询笔记作者的所有粉丝 select * form tb_follow where follow_user_id = ?
+        List<Follow> follows = followMapper.selectList(new QueryWrapper<Follow>().eq("follow_user_id", userId));
+        //2. 推送笔记id给所有的粉丝
+        for (Follow follow : follows) {
+            //1.获取粉丝id
+            Long fanId = follow.getUserId();
+            //2.推送到sortedSet => 理解为每一个粉丝有一个收件箱, 存储的是关注的用户的id
+            String key = FEED_KEY +fanId ;
+            stringRedisTemplate.opsForZSet().add(key,blog.getId().toString(),System.currentTimeMillis());
+        }
+        //3.返回id
+        return Result.ok(blog.getId());
+    }
+
+    @Override
+    public Result queryBlogOfFollow(Long max, Long offSet) {
+        //1. 查询当前用户
+        Long userId = UserHolder.getUser().getId();
+        //2.查询收件箱  ZREVRANGEBYSCORE key max min WITHSCORES LIMIT offset count
+        //  z reverse range by score
+        String key = FEED_KEY+ userId;
+        //3.解析数据, blogId min , offSet (需要返回的)
+          // redis中存储的是 value(k) score(v) 的集合
+        Set<ZSetOperations.TypedTuple<String>> typedTuples = stringRedisTemplate.opsForZSet().
+                reverseRangeByScoreWithScores(key, 0, max, offSet, 3);
+        //非空判断
+        if(typedTuples==null||typedTuples.isEmpty()){
+            return Result.ok(Collections.emptyList());
+        }
+        //4.根据id查询blog minTime offset
+        List<Long> ids=new ArrayList<>(typedTuples.size());  //id是关注的用户发布的blog的id
+        long minTime =0 ; // 需要获得最后一个时间戳
+        int offSetCount=1;  // 统计与最后的那个score 相同的个数 => 也就是偏移量
+        for (ZSetOperations.TypedTuple<String> tuple : typedTuples) {
+            //1.获取id
+            ids.add(Long.valueOf(tuple.getValue()));
+            //2.获取时间戳
+            long time =tuple.getScore().longValue();
+            if(time  == minTime){
+                offSetCount++;
+            }else{
+                minTime =time;
+                offSetCount=1;
+            }
+        }
+        String idStr = StringUtil.join(ids, ",");
+        // listByIds 的查询是 基于mysql的in查询的,  也就是无序的, 因此需要重新写sql
+        // last就是在尾部追加SQL语句
+        List<Blog> blogs = query().in("id", ids).last("ORDER BY FIELD (id ," + idStr + ")").list();
+        blogs.stream().map(blog -> {
+            queryBlogUser(blog);
+            isBlogLiked(blog);
+            return blog;
+        }).collect(Collectors.toList());
+        //5.封装并返回
+        ScrollResult scrollResult = new ScrollResult();
+        scrollResult.setList(blogs);
+        scrollResult.setOffset(offSetCount);
+        scrollResult.setMinTime(minTime);
+        return Result.ok(scrollResult);
     }
 }

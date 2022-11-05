@@ -9,7 +9,7 @@ spring:
     username: root
     password: qwer
   redis:
-    host: 192.168.204.129
+    host: 192.168.159.129
     port: 6379
     password: qwer
     lettuce:
